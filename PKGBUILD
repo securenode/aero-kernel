@@ -16,11 +16,10 @@ _cachy_config=${_cachy_config-y}
 # 'bore' - select 'Burst-Oriented Response Enhancer'
 # 'bmq' - select 'BMQ Scheduler'
 # 'hardened' - select 'BORE Scheduler hardened' ## kernel with hardened config and hardening patches with the bore scheduler
-# 'cachyos' - select 'Sched-Ext Scheduler Framework Variant Scheduler with BORE Scheduler'
+# 'cachyos' - select 'CachyOS Default Scheduler (BORE)'
 # 'eevdf' - select 'EEVDF Scheduler'
 # 'rt' - select EEVDF, but includes a series of realtime patches
 # 'rt-bore' - select Burst-Oriented Response Enhancer, but includes a series of realtime patches
-# 'sched-ext' - select 'sched-ext' Scheduler, based on EEVDF
 _cpusched=${_cpusched-bore}
 
 ### Tweak kernel options prior to a build via nconfig
@@ -64,14 +63,11 @@ _use_current=${_use_current-}
 ### Enable KBUILD_CFLAGS -O3
 _cc_harder=${_cc_harder-y}
 
-### Set this to your number of threads you have in your machine otherwise it will default to 320
-_nr_cpus=${_nr_cpus-}
-
 ### Set performance governor as default
 _per_gov=${_per_gov-}
 
 ### Enable TCP_CONG_BBR3
-_tcp_bbr3=${_tcp_bbr3-y}
+_tcp_bbr3=${_tcp_bbr3-}
 
 ### Running with a 1000HZ, 750Hz, 625Hz, 600 Hz, 500Hz, 300Hz, 250Hz and 100Hz tick rate
 _HZ_ticks=${_HZ_ticks-1000}
@@ -146,17 +142,23 @@ _build_nvidia_open=${_build_nvidia_open-}
 # Build a debug package with non-stripped vmlinux
 _build_debug=${_build_debug-}
 
-if [[ "$_use_llvm_lto" = "thin" || "$_use_llvm_lto" = "full" ]] && [ "$_use_lto_suffix" = "y"  ]; then
+# ATTENTION: Do not modify after this line
+_is_lto_kernel() {
+    [[ "$_use_llvm_lto" = "thin" || "$_use_llvm_lto" = "full" ]]
+    return $?
+}
+
+if _is_lto_kernel && [ "$_use_lto_suffix" = "y"  ]; then
     _pkgsuffix="cachyos-${_cpusched}-lto"
-elif [ "$_use_llvm_lto" = "none" ]  && [ -z "$_use_kcfi" ] && [ "$_use_gcc_suffix" = "y" ]; then
+elif ! _is_lto_kernel && [ "$_use_gcc_suffix" = "y" ]; then
     _pkgsuffix="cachyos-${_cpusched}-gcc"
 else
     _pkgsuffix="cachyos-${_cpusched}"
 fi
 
 pkgbase="linux-$_pkgsuffix"
-_major=6.11
-_minor=3
+_major=6.12
+_minor=4
 #_minorc=$((_minor+1))
 #_rcver=rc8
 pkgver=${_major}.${_minor}
@@ -187,7 +189,7 @@ makedepends=(
 )
 
 _patchsource="https://raw.githubusercontent.com/cachyos/kernel-patches/master/${_major}"
-_nv_ver=560.35.03
+_nv_ver=565.77
 _nv_pkg="NVIDIA-Linux-x86_64-${_nv_ver}"
 _nv_open_pkg="open-gpu-kernel-modules-${_nv_ver}"
 source=(
@@ -197,7 +199,7 @@ source=(
     "${_patchsource}/all/0001-cachyos-base-all.patch")
 
 # LLVM makedepends
-if [[ "$_use_llvm_lto" = "thin" || "$_use_llvm_lto" = "full" ]] || [ -n "$_use_kcfi" ]; then
+if _is_lto_kernel; then
     makedepends+=(clang llvm lld)
     source+=("${_patchsource}/misc/dkms-clang.patch")
     BUILD_FLAGS=(
@@ -216,14 +218,13 @@ fi
 # ZFS support
 if [ -n "$_build_zfs" ]; then
     makedepends+=(git)
-    source+=("git+https://github.com/cachyos/zfs.git#commit=baa50314567afd986a00838f0fa65fdacbd12daf")
+    source+=("git+https://github.com/cachyos/zfs.git#commit=e65f69e41f4a276d7d0d1800a2878308a0ba84a6")
 fi
 
 # NVIDIA pre-build module support
 if [ -n "$_build_nvidia" ]; then
     source+=("https://us.download.nvidia.com/XFree86/Linux-x86_64/${_nv_ver}/${_nv_pkg}.run"
-             "${_patchsource}/misc/nvidia/0001-Make-modeset-and-fbdev-default-enabled.patch"
-             "${_patchsource}/misc/nvidia/0004-6.11-Add-fix-for-fbdev.patch")
+             "${_patchsource}/misc/nvidia/0001-Make-modeset-and-fbdev-default-enabled.patch")
 fi
 
 if [ -n "$_build_nvidia_open" ]; then
@@ -231,31 +232,22 @@ if [ -n "$_build_nvidia_open" ]; then
              "${_patchsource}/misc/nvidia/0001-Make-modeset-and-fbdev-default-enabled.patch"
              "${_patchsource}/misc/nvidia/0002-Do-not-error-on-unkown-CPU-Type-and-add-Zen5-support.patch"
              "${_patchsource}/misc/nvidia/0003-Add-IBT-Support.patch"
-             "${_patchsource}/misc/nvidia/0004-6.11-Add-fix-for-fbdev.patch"
-             "${_patchsource}/misc/nvidia/0005-6.12-drm_outpull_pill-changed-check.patch")
+             "${_patchsource}/misc/nvidia/0004-silence-event-assert-until-570.patch"
+             "${_patchsource}/misc/nvidia/0005-nvkms-Sanitize-trim-ELD-product-name-strings.patch")
 fi
 
 ## List of CachyOS schedulers
 case "$_cpusched" in
-    cachyos) # CachyOS Scheduler (Sched-ext + BORE + Cachy Sauce)
-        source+=("${_patchsource}/sched/0001-sched-ext.patch"
-                 "${_patchsource}/sched/0001-bore-cachy-ext.patch");;
-    bore) ## BORE Scheduler
-        source+=("${_patchsource}/sched/0001-bore-cachy.patch");;
+    cachyos|bore|rt-bore|hardened) # CachyOS Scheduler (BORE)
+        source+=("${_patchsource}/sched/0001-bore-cachy.patch");;&
     bmq) ## Project C Scheduler
         source+=("${_patchsource}/sched/0001-prjc-cachy.patch");;
-    eevdf) ## 6.12 EEVDF patches
-        source+=("${_patchsource}/sched/0001-eevdf-next.patch");;
+    hardened) ## Hardened Patches
+        source+=("${_patchsource}/misc/0001-hardened.patch");;
     rt) ## EEVDF with RT patches
         source+=("${_patchsource}/misc/0001-rt.patch");;
     rt-bore) ## RT with BORE Scheduler
-        source+=("${_patchsource}/misc/0001-rt.patch"
-                 "${_patchsource}/sched/0001-bore-cachy-rt.patch");;
-    hardened) ## Hardened Patches with BORE Scheduler
-        source+=("${_patchsource}/sched/0001-bore-cachy.patch"
-                 "${_patchsource}/misc/0001-hardened.patch");;
-    sched-ext) ## SCHED-EXT
-        source+=("${_patchsource}/sched/0001-sched-ext.patch");;
+        source+=("${_patchsource}/misc/0001-rt.patch");;
 esac
 
 export KBUILD_BUILD_HOST=cachyos
@@ -316,13 +308,11 @@ prepare() {
     [ -z "$_cpusched" ] && _die "The value is empty. Choose the correct one again."
 
     case "$_cpusched" in
-        cachyos) scripts/config -e SCHED_CLASS_EXT -e SCHED_BORE;;
-        bore|hardened) scripts/config -e SCHED_BORE;;
+        cachyos|bore|hardened) scripts/config -e SCHED_BORE;;
         bmq) scripts/config -e SCHED_ALT -e SCHED_BMQ;;
         eevdf) ;;
-        rt) scripts/config -e PREEMPT_COUNT -e PREEMPTION -d PREEMPT_VOLUNTARY -d PREEMPT -d PREEMPT_NONE -d PREEMPT_RT -d PREEMPT_DYNAMIC -e PREEMPT_BUILD -e PREEMPT_BUILD_AUTO -e PREEMPT_AUTO;;
-        rt-bore) scripts/config -e SCHED_BORE -e PREEMPT_COUNT -e PREEMPTION -d PREEMPT_VOLUNTARY -d PREEMPT -d PREEMPT_NONE -d PREEMPT_RT -d PREEMPT_DYNAMIC -e PREEMPT_BUILD -e PREEMPT_BUILD_AUTO -e PREEMPT_AUTO;;
-        sched-ext) scripts/config -e SCHED_CLASS_EXT;;
+        rt) scripts/config -d PREEMPT -d PREEMPT_DYNAMIC -e PREEMPT_RT;;
+        rt-bore) scripts/config -e SCHED_BORE -d PREEMPT -d PREEMPT_DYNAMIC -e PREEMPT_RT;;
         *) _die "The value $_cpusched is invalid. Choose the correct one again.";;
     esac
 
@@ -376,17 +366,6 @@ prepare() {
             -d NEED_MULTIPLE_NODES \
             -d NUMA_BALANCING \
             -d NUMA_BALANCING_DEFAULT_ENABLED
-    fi
-
-    ### Setting NR_CPUS
-    if [[ "$_nr_cpus" -ge 2 && "$_nr_cpus" -le 512 ]]; then
-        echo "Setting custom NR_CPUS..."
-        scripts/config --set-val NR_CPUS "$_nr_cpus"
-    elif [ -z "$_nr_cpus" ]; then
-        echo "Setting default NR_CPUS..."
-        scripts/config --set-val NR_CPUS 320
-    else
-        _die "The value '$_nr_cpus' is invalid. Please select a numerical value from 2 to 512..."
     fi
 
     ### Select performance governor
@@ -454,7 +433,11 @@ prepare() {
             -d DEFAULT_CUBIC \
             -e TCP_CONG_BBR \
             -e DEFAULT_BBR \
-            --set-str DEFAULT_TCP_CONG bbr
+            --set-str DEFAULT_TCP_CONG bbr \
+            -m NET_SCH_FQ_CODEL \
+            -e NET_SCH_FQ \
+            -d CONFIG_DEFAULT_FQ_CODEL \
+            -e CONFIG_DEFAULT_FQ
     fi
 
     ### Select THP
@@ -531,20 +514,18 @@ prepare() {
 
         # Use fbdev and modeset as default
         patch -Np1 -i "${srcdir}/0001-Make-modeset-and-fbdev-default-enabled.patch" -d "${srcdir}/${_nv_pkg}/kernel"
-        # Fix broken fbdev on 6.11
-        patch -Np2 -i "${srcdir}/0004-6.11-Add-fix-for-fbdev.patch" -d "${srcdir}/${_nv_pkg}/kernel"
     fi
 
     if [ -n "$_build_nvidia_open" ]; then
         patch -Np1 -i "${srcdir}/0001-Make-modeset-and-fbdev-default-enabled.patch" -d "${srcdir}/${_nv_open_pkg}/kernel-open"
-        # Fix for https://bugs.archlinux.org/task/74886
-        patch -Np1 --no-backup-if-mismatch -i "${srcdir}/0003-Add-IBT-Support.patch" -d "${srcdir}/${_nv_open_pkg}"
         # Fix for Zen5 error print in dmesg
         patch -Np1 --no-backup-if-mismatch -i "${srcdir}/0002-Do-not-error-on-unkown-CPU-Type-and-add-Zen5-support.patch" -d "${srcdir}/${_nv_open_pkg}"
-        # Fix broken fbdev on 6.11
-        patch -Np1 --no-backup-if-mismatch -i "${srcdir}/0004-6.11-Add-fix-for-fbdev.patch" -d "${srcdir}/${_nv_open_pkg}"
-        # Fix for 6.12 Module Compilation
-        patch -Np1 --no-backup-if-mismatch -i "${srcdir}/0005-6.12-drm_outpull_pill-changed-check.patch" -d "${srcdir}/${_nv_open_pkg}"
+        # Fix for https://bugs.archlinux.org/task/74886
+        patch -Np1 --no-backup-if-mismatch -i "${srcdir}/0003-Add-IBT-Support.patch" -d "${srcdir}/${_nv_open_pkg}"
+        # Fix for CS2 dmesg spam
+        patch -Np1 --no-backup-if-mismatch -i "${srcdir}/0004-silence-event-assert-until-570.patch" -d "${srcdir}/${_nv_open_pkg}"
+        # Fix for HDMI names
+        patch -Np1 --no-backup-if-mismatch -i "${srcdir}/0005-nvkms-Sanitize-trim-ELD-product-name-strings.patch" -d "${srcdir}/${_nv_open_pkg}"
     fi
 }
 
@@ -595,8 +576,8 @@ _package() {
     optdepends=('wireless-regdb: to set the correct wireless channels of your country'
                 'linux-firmware: firmware images needed for some devices'
                 'modprobed-db: Keeps track of EVERY kernel module that has ever been probed - useful for those of us who make localmodconfig'
-                'uksmd: Userspace KSM helper daemon')
-    provides=(VIRTUALBOX-GUEST-MODULES WIREGUARD-MODULE KSMBD-MODULE UKSMD-BUILTIN)
+                'scx-scheds: to use sched-ext schedulers')
+    provides=(VIRTUALBOX-GUEST-MODULES WIREGUARD-MODULE KSMBD-MODULE UKSMD-BUILTIN NTSYNC-MODULE)
 
     cd "$_srcname"
 
@@ -611,7 +592,7 @@ _package() {
     echo "$pkgbase" | install -Dm644 /dev/stdin "$modulesdir/pkgbase"
 
     echo "Installing modules..."
-    ZSTD_CLEVEL=19 make INSTALL_MOD_PATH="$pkgdir/usr" INSTALL_MOD_STRIP=1 \
+    ZSTD_CLEVEL=19 make "${BUILD_FLAGS[@]}" INSTALL_MOD_PATH="$pkgdir/usr" INSTALL_MOD_STRIP=1 \
         DEPMOD=/doesnt/exist  modules_install  # Suppress depmod
 
     # remove build links
@@ -724,7 +705,7 @@ _package-zfs(){
     cd "${srcdir}/zfs"
     install -dm755 "${modulesdir}"
     install -m644 module/*.ko "${modulesdir}"
-    find "$pkgdir" -name '*.ko' -exec zstd --rm -19 {} +
+    find "$pkgdir" -name '*.ko' -exec zstd --rm -19 -T0 {} +
     #  sed -i -e "s/EXTRAMODULES='.*'/EXTRAMODULES='${pkgver}-${pkgbase}'/" "$startdir/zfs.install"
 }
 
@@ -742,7 +723,7 @@ _package-nvidia(){
     install -dm755 "${modulesdir}"
     install -m644 kernel/*.ko "${modulesdir}"
     install -Dt "$pkgdir/usr/share/licenses/${pkgname}" -m644 LICENSE
-    find "$pkgdir" -name '*.ko' -exec zstd --rm -19 {} +
+    find "$pkgdir" -name '*.ko' -exec zstd --rm -19 -T0 {} +
 }
 
 _package-nvidia-open(){
@@ -760,7 +741,7 @@ _package-nvidia-open(){
     install -m644 kernel-open/*.ko "${modulesdir}"
     install -Dt "$pkgdir/usr/share/licenses/${pkgname}" -m644 COPYING
 
-    find "$pkgdir" -name '*.ko' -exec zstd --rm -19 {} +
+    find "$pkgdir" -name '*.ko' -exec zstd --rm -19 -T0 {} +
 }
 
 pkgname=("$pkgbase")
@@ -776,8 +757,8 @@ for _p in "${pkgname[@]}"; do
     }"
 done
 
-b2sums=('69582e4745850f3ec004d87859ac88994e3715ed38cd66aff2633fbcb6c20ca2e3be83417cd2c42c2757ab4e084e622c688799b5ad28e15c391adb2afab79a68'
-        '080302a1061cb4529bda58e1eecb782f0ee79aca547f03c991186dd4a647fc5fb772b32efcf5f895bca02104686a27f06b32eaf4745001e5bcb65b253349084f'
-        'b1e964389424d43c398a76e7cee16a643ac027722b91fe59022afacb19956db5856b2808ca0dd484f6d0dfc170482982678d7a9a00779d98cd62d5105200a667'
-        'f85ac822b5def33cd8a530bb698d2773d0b3a7c03e242c5ab48add0a084a846c5cb372cd11d2f4008b4205a0641f00a6ac16da9c56adcbbe40f827ccfae71bcf'
-        '7a41b35dd68457724b23b769803edac7f090d2032177fdada6fbf67604cfc6f167f68853b9be15eacd04204f16bbf06af26307720dfe9d78f400365b9616871f')
+b2sums=('5f0db13ed414b6221db1acb6019580e10533ecd1b596918230a6076ce433c75c154a3799bcdab48b1fbb2ff90e573f8cc879ae2d26677c560c6818fa37ce3c24'
+        'a69ecf1084f8d819d9aef3387541b275900dce010ab0d6d8f7ae9f3c4554a96d4f4c2d67b92ef6ea93e819043276a52c201c39d60dd38303d3a881d5c4bef873'
+        '390c7b80608e9017f752b18660cc18ad1ec69f0aab41a2edfcfc26621dcccf5c7051c9d233d9bdf1df63d5f1589549ee0ba3a30e43148509d27dafa9102c19ab'
+        'db766c77321f1248e3478296a44a0b1a1d561bf93f859b0235e26351705c1261d9a6a8d3b3be448aecfe33fed5376e56778bf3bc3f8069c135b60e683d015cfe'
+        '25ab8f042468103bd32bfc49e0897dc262b4b5bffec801463357bf03c0e81572c3c278b7eda506bd787cd5101f118d84d8bebb1ee2d168e7ca9b3dabedf038de')
